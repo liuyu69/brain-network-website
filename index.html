@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Brain Network (Final - Mouse Hover Effect)</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: #000; width: 100vw; height: 100vh; overflow: hidden; }
+    #brain-view { width: 100vw; height: 100vh; display: block; }
+  </style>
+</head>
+<body>
+<canvas id="brain-view"></canvas>
+
+<!-- 
+  最終解決方案：
+  1. 粒子連線網路效果 (稀疏連線)。
+  2. 滑鼠懸停微動效果 (非 OrbitControls)。
+  3. 初始視角調整以符合用戶圖片。
+-->
+
+<script src="https://unpkg.com/three@0.125.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.125.0/examples/js/loaders/STLLoader.js"></script>
+
+<script>
+// --- Main Application Logic (點雲連線網路版本) ---
+
+// 檢查 THREE 是否已定義，以確保載入成功
+if (typeof THREE === 'undefined') {
+    console.error("THREE.js 核心庫載入失敗！請檢查 CDN 連結。");
+}
+
+const scene = new THREE.Scene();
+const renderer = new THREE.WebGLRenderer({
+    canvas: document.getElementById('brain-view'),
+    antialias: true
+});
+
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x000000); // 設置背景為黑色
+
+// 設置相機
+const camera = new THREE.PerspectiveCamera(
+    45,
+    window.innerWidth / window.innerHeight,
+    1,
+    2000
+);
+
+
+
+// *** 最終確定的初始旋轉（即回正目標）***
+const initialRotationX = Math.PI / -2; // 用戶設定的 X 軸旋轉值
+const initialRotationY = 0;      // 用戶設定的 Y 軸旋轉值
+
+
+
+// 自動回正相關變數
+let isMouseMoving = false;
+let mouseMoveTimeout;
+const autoRotateSpeed = 0.005; // 自動回正速度
+
+// 設置滑鼠位置變數
+const mouse = new THREE.Vector2();
+let targetRotationX = 0;
+let targetRotationY = 0;
+
+// 處理窗口大小變化
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// 處理滑鼠移動事件 (用於微動效果)
+document.addEventListener('mousemove', onDocumentMouseMove, false);
+
+function onDocumentMouseMove(event) {
+    // 將滑鼠位置標準化到 -1 到 +1 之間
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+    // 設置目標旋轉角度 (幅度加大到 0.5)
+// 修正旋轉軸向：由於模型繞 X 軸旋轉了 -90 度，我們需要交換和反轉軸向
+targetRotationY = -mouse.x * 0.5; // 左右微動 (應用到 Z 軸)
+targetRotationX = mouse.y * 0.5; // 上下微動 (應用到 Y 軸)
+    
+    // 設置計時器，如果滑鼠停止移動，則觸發自動回正
+    isMouseMoving = true;
+    clearTimeout(mouseMoveTimeout);
+    mouseMoveTimeout = setTimeout(() => {
+        isMouseMoving = false;
+    }, 1000); // 1秒後視為停止移動
+}
+
+// 載入 STL 模型
+const loader = new THREE.STLLoader();
+
+loader.load('human-brain.stl', function(geometry) {
+    
+    // 載入成功，在控制台輸出訊息
+    console.log('STL 模型載入成功。');
+
+    // 檢查模型是否真的有幾何體
+    const vertexCount = geometry.attributes.position ? geometry.attributes.position.count : 0;
+    console.log(`STL 模型載入成功。頂點數: ${vertexCount}`);
+
+    if (vertexCount === 0) {
+        console.warn('警告：STL 檔案載入成功，但幾何體中沒有任何頂點 (可能是空檔案或格式錯誤)。');
+        return;
+    }
+
+    // --- 網路連線效果邏輯 ---
+
+    // 1. 計算邊界框並居中
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z);
+    
+    // 2. 調整相機距離
+    const fov = camera.fov * (Math.PI / 180);
+    let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
+    cameraZ *= 1.5; // 留出一些邊距
+    
+    // 3. 調整相機位置和初始視角 (頭的側面左右 - 參考圖片)
+    // 調整角度以符合用戶提供的最終參數
+    camera.position.set(center.x + cameraZ * 1, center.y + cameraZ * 0, center.z + cameraZ * 0);
+    camera.lookAt(center); // 讓相機看向模型中心
+    camera.far = cameraZ * 1; // 根據用戶要求調整遠裁剪面
+    camera.updateProjectionMatrix();
+
+    // 4. 確保模型居中
+    geometry.center();
+
+    // 5. 創建點雲 (白色粒子)
+    const pointsMaterial = new THREE.PointsMaterial({
+        color: 0xffffff, // 白色粒子
+        size: maxDim / 400, // 根據模型大小調整粒子尺寸 (改小一點點)
+        sizeAttenuation: true
+    });
+    const points = new THREE.Points(geometry, pointsMaterial);
+    
+    // 6. 創建稀疏連線網路
+    // 由於 STL 檔案的頂點是無序的，我們不能簡單地使用 EdgesGeometry。
+    // 這裡我們使用一個簡化的方法：創建一個稀疏的 LineSegments 幾何體。
+    
+    const positions = geometry.attributes.position.array;
+    const numVertices = positions.length / 3;
+    const lineVertices = [];
+    const maxDistance = maxDim * 0.1; // 連線的最大距離，用於控制稀疏度
+
+    // 隨機採樣頂點並嘗試連線
+    const sampledIndices = [];
+    const sampleCount = Math.min(numVertices, 500); // 採樣 500 個點
+    for (let i = 0; i < sampleCount; i++) {
+        sampledIndices.push(Math.floor(Math.random() * numVertices));
+    }
+
+    for (let i = 0; i < sampleCount; i++) {
+        const index1 = sampledIndices[i];
+        const x1 = positions[index1 * 3];
+        const y1 = positions[index1 * 3 + 1];
+        const z1 = positions[index1 * 3 + 2];
+
+        for (let j = i + 1; j < sampleCount; j++) {
+            const index2 = sampledIndices[j];
+            const x2 = positions[index2 * 3];
+            const y2 = positions[index2 * 3 + 1];
+            const z2 = positions[index2 * 3 + 2];
+
+            const distance = Math.sqrt(
+                Math.pow(x2 - x1, 2) +
+                Math.pow(y2 - y1, 2) +
+                Math.pow(z2 - z1, 2)
+            );
+
+            if (distance < maxDistance) {
+                lineVertices.push(x1, y1, z1);
+                lineVertices.push(x2, y2, z2);
+            }
+        }
+    }
+
+    const lineGeometry = new THREE.BufferGeometry();
+    lineGeometry.setAttribute('position', new THREE.Float32BufferAttribute(lineVertices, 3));
+
+    const lineMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 1, opacity: 0.2, transparent: true });
+    const lines = new THREE.LineSegments(lineGeometry, lineMaterial);
+
+    const group = new THREE.Group();
+    group.add(points);
+    group.add(lines);
+
+    // *** 應用初始旋轉到 Group ***
+    group.rotation.x = initialRotationX;
+    group.rotation.y = initialRotationY;
+
+    scene.add(group);
+    
+    console.log('連線網路模型已添加到場景。');
+
+    // 動畫迴圈 (帶有滑鼠微動控制和自動回正)
+    function animate() {
+        requestAnimationFrame(animate);
+
+        if (isMouseMoving) {
+            // 滑鼠移動時，應用微動旋轉 (平滑過渡)
+// 應用微動旋轉 (平滑過渡)
+// 修正：將滑鼠 X 應用到 Z 軸 (左右)，滑鼠 Y 應用到 Y 軸 (上下)
+group.rotation.y += (targetRotationX - group.rotation.y) * 0.05; // 滑鼠 Y (上下) 應用到 Y 軸
+group.rotation.z += (targetRotationY - group.rotation.z) * 0.05; // 滑鼠 X (左右) 應用到 Z 軸
+        } else {
+            // 滑鼠停止移動時，緩慢回正
+const targetX = initialRotationX; // 回正到初始 X 軸旋轉值
+const targetY = initialRotationY; // 回正到初始 Y 軸旋轉值 (Y 軸應為 0)
+const targetZ = 0; // Z 軸回正到 0
+
+group.rotation.x += (targetX - group.rotation.x) * autoRotateSpeed;
+group.rotation.y += (targetY - group.rotation.y) * autoRotateSpeed;
+group.rotation.z += (targetZ - group.rotation.z) * autoRotateSpeed;
+        }
+
+        renderer.render(scene, camera);
+    }
+
+    animate();
+
+}, (xhr) => {
+    // 載入進度
+    console.log((xhr.loaded / xhr.total * 100) + '% loaded');
+}, (error) => {
+    // 載入失敗
+    console.error('STL 檔案載入時發生錯誤:', error);
+});
+</script>
+
+</body>
+</html>
