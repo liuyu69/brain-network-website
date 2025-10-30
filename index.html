@@ -18,10 +18,15 @@
   3. 初始視角調整以符合用戶圖片。
 -->
 
+<!-- 1. Three.js 核心庫 -->
 <script src="https://unpkg.com/three@0.125.0/build/three.min.js"></script>
+
+<!-- 2. STLLoader -->
 <script src="https://cdn.jsdelivr.net/npm/three@0.125.0/examples/js/loaders/STLLoader.js"></script>
 
-<script>
+<!-- 3. OrbitControls (您遺漏的關鍵控制元件 ) -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.125.0/examples/js/controls/OrbitControls.js"></script>
+
 // --- Main Application Logic (點雲連線網路版本) ---
 
 // 檢查 THREE 是否已定義，以確保載入成功
